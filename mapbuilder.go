@@ -1,59 +1,72 @@
 package mapbuilder
 
 import (
+	"fmt"
 	"github.com/ktdf/parser"
 	"net/http"
 	"net/url"
 	"regexp"
 )
 
-func CollectUrls(siteUrl string, maxDepth int) (l *Links, err error) {
+func CollectUrls(siteUrl string, maxDepth uint) (l *Links, err error) {
 	urls := make(Links)
 	strippedUrl, _, _, err := getStrippedHostname(siteUrl)
 	if err != nil {
 		return l, err
 	}
 	urls.AddLink(strippedUrl)
-	l, err = someInternalFunc(&urls, siteUrl, 1, maxDepth)
-
+	urls[strippedUrl].Depth = 1
+	l, err = recurseLinkParse(&urls, strippedUrl,1, maxDepth)
 	return l, err
 }
 
-func someInternalFunc(l *Links, siteUrl string, depth int, maxDepth int) (*Links, error) {
-	strippedUrl, _, _, err := getStrippedHostname(siteUrl)
-	if err != nil {
-		return l, err
-	}
-	response, err := http.Get(siteUrl)
-	if err != nil {
-		return l, err
-	}
-	pagelinks := parser.ParseLinks(response.Body)
-	for _, link := range pagelinks {
-		strippedLink, strippedPath, strippedSchema, err := getStrippedHostname(link.Href)
-		if err != nil {
-			return l, err
-		}
-		if strippedSchema == "" || strippedSchema == "http" || strippedSchema == "https" {
-			if strippedLink == "" {
-				if strippedPath == "/" {
-					strippedPath = ""
-				}
-				l.AddChild(strippedUrl, strippedUrl+strippedPath)
-			} else {
-				ok, err := regexp.Match(`^(www\.)?`+strippedUrl, []byte(strippedLink))
+func recurseLinkParse(l *Links, strippedUrl string, depth uint, maxDepth uint) (*Links, error) {
+	var notDoneYet bool
+	fmt.Printf("Working on %v level\n", depth)
+	for siteLink, linkData := range *l {
+		if linkData.Depth == depth {
+			notDoneYet = true
+			response, err := http.Get(`http://`+siteLink)
+			if err != nil {
+				return l, err
+			}
+			fmt.Printf("Working with %v\n", siteLink)
+			pagelinks := parser.ParseLinks(response.Body)
+			for _, link := range pagelinks {
+				strippedLink, strippedPath, strippedSchema, err := getStrippedHostname(link.Href)
 				if err != nil {
 					return l, err
 				}
-				if ok {
-					l.AddChild(strippedUrl+strippedPath, strippedUrl)
+				if strippedSchema == "" || strippedSchema == "http" || strippedSchema == "https" {
+					if strippedLink == "" {
+						if strippedPath == "/" {
+							strippedPath = ""
+						}
+						l.AddChild(siteLink, strippedUrl+strippedPath)
+					} else {
+						ok, err := regexp.Match(`^(www\.)?`+strippedUrl, []byte(strippedLink))
+						if err != nil {
+							return l, err
+						}
+						if ok {
+							l.AddChild(siteLink, strippedUrl+strippedPath)
+						}
+					}
 				}
 			}
 		}
 	}
-
+	if depth == maxDepth {
+		return l, nil
+	}
+	depth++
+	if notDoneYet {
+		l, err := recurseLinkParse(l, strippedUrl, depth, maxDepth)
+		if err != nil {
+			return l, err
+	}
+	}
 	return l, nil
-
 }
 
 //Link is a struct of Ulrs. Could have more than one parent and more than one child.
@@ -114,7 +127,6 @@ func (l *Link) DepthUpdate() error {
 	}
 	return nil
 }
-
 
 //getStrippedHostname is used to strip hostname and path to work with it without any crap
 func getStrippedHostname(s string) (string, string, string, error) {
